@@ -431,19 +431,17 @@ function updateGame(player, dt) {
 		// Check for strike
 		if (beatenPinCount === 10) {
 			video.src = "videos/strike/strike-1.mp4";
+			video.play();
 		}
-
+		// Check for split (only pins 6 and 9 left standing)
 		else if (standingPins.length === 2 && standingPins.includes(7) && standingPins.includes(10)) {
-			video.src = "videos/spare/spare-1.mp4"; // your spare video
+			video.src = "videos/split/split-1.mp4"; // your split video
+			video.play();
 		}
 		// Regular throw
 		else {
 			video.src = "videos/throw-1.mp4";
 		}
-
-		video.play();
-
-
 
 		var prevFrameNumber = player.scores.frameNumber;
 		player.scores.addThrowResult(beatenPinCount);
