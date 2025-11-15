@@ -1,4 +1,3 @@
-
 const CAMERA_FOV = 50.0;
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 10.0;
@@ -18,6 +17,10 @@ const IMITATION_THROW_TIME_MAX = 7.0;
 const IMITATION_THROW_POSITION_MAX = 0.3;
 const IMITATION_THROW_ANGLE_MAX = Math.PI / 18.0;
 
+// Camera animation constants
+const CAMERA_ZOOM_DURATION = 0.8; // seconds to zoom in
+const CAMERA_ZOOM_OUT_DURATION = 0.6; // seconds to zoom out
+
 var container, scene, camera, clock, renderer, ppi;
 var touchPoint, raycaster, pickPoint, dragPoint, releaseVector, pickSphere;
 var trackProtoMesh, ballProtoMesh, pinProtoMesh;
@@ -32,14 +35,29 @@ var pickY = 0.0;
 var pickOffset = 0.0;
 var pickTime = 0;
 
+// Camera animation state
+var cameraAnimating = false;
+var cameraAnimationTime = 0;
+var cameraAnimationDuration = 0;
+var cameraStartPos = new THREE.Vector3();
+var cameraStartRot = new THREE.Euler();
+var cameraTargetPos = new THREE.Vector3();
+var cameraTargetRot = new THREE.Euler();
+var cameraDefaultPos = new THREE.Vector3(0.0, 2.5, 6.0);
+var cameraDefaultRot = new THREE.Euler(-25.0 / 180.0 * Math.PI, 0, 0);
+var cameraZoomPos = new THREE.Vector3(0.0, 1.8, 0.5); // Close to TV
+var cameraZoomRot = new THREE.Euler(0, 0, 0);
+
 class Player {
-	constructor(id, local, physics, scores, ballMesh, pinMeshes) {
+	constructor(id, local, physics, scores, ballMesh, pinMeshes, tvMesh, screenMaterial) {
 		this.id = id;
 		this.local = local;
 		this.physics = physics;
 		this.scores = scores;
 		this.ballMesh = ballMesh;
 		this.pinMeshes = pinMeshes;
+		this.tvMesh = tvMesh;
+		this.screenMaterial = screenMaterial;
 	}
 }
 
@@ -51,25 +69,51 @@ class Imitation {
 	}
 }
 
+function startCameraZoom(targetPos, targetRot, duration) {
+	cameraAnimating = true;
+	cameraAnimationTime = 0;
+	cameraAnimationDuration = duration;
+	cameraStartPos.copy(camera.position);
+	cameraStartRot.copy(camera.rotation);
+	cameraTargetPos.copy(targetPos);
+	cameraTargetRot.copy(targetRot);
+}
+
+function updateCameraAnimation(dt) {
+	if (!cameraAnimating) return;
+	
+	cameraAnimationTime += dt;
+	var t = Math.min(cameraAnimationTime / cameraAnimationDuration, 1.0);
+	
+	// Ease in-out
+	t = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+	
+	camera.position.lerpVectors(cameraStartPos, cameraTargetPos, t);
+	camera.rotation.x = cameraStartRot.x + (cameraTargetRot.x - cameraStartRot.x) * t;
+	camera.rotation.y = cameraStartRot.y + (cameraTargetRot.y - cameraStartRot.y) * t;
+	camera.rotation.z = cameraStartRot.z + (cameraTargetRot.z - cameraStartRot.z) * t;
+	
+	if (t >= 1.0) {
+		cameraAnimating = false;
+	}
+}
+
 function init() {
 	scene = new THREE.Scene();
 	scene.background = new THREE.Color(0.7, 0.7, 0.7);
 
 	camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight,
 			CAMERA_NEAR, CAMERA_FAR);
-	camera.position.set(0.0, 2.5, 6.0);
-	camera.rotation.x = -25.0 / 180.0 * Math.PI;
-
-	// camera.lookAt(0, 3.0, -1.2); // make the camera explicitly point at the TV
+	camera.position.copy(cameraDefaultPos);
+	camera.rotation.copy(cameraDefaultRot);
 
 	// Load floor texture
 var loader = new THREE.TextureLoader();
 loader.load('res/floor.jpeg', function(texture) {
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(100, 100); // repeat to cover large area
+    texture.repeat.set(100, 100);
 
-    // Create a plane for the floor
     var floorGeo = new THREE.PlaneGeometry(50, 50);
     var floorMat = new THREE.MeshStandardMaterial({ 
         map: texture,
@@ -77,8 +121,8 @@ loader.load('res/floor.jpeg', function(texture) {
     });
     var floorMesh = new THREE.Mesh(floorGeo, floorMat);
 
-    floorMesh.rotation.x = -Math.PI / 2; // make it horizontal
-    floorMesh.position.y = 0; // adjust height if needed
+    floorMesh.rotation.x = -Math.PI / 2;
+    floorMesh.position.y = 0;
 
     scene.add(floorMesh);
 });
@@ -108,10 +152,9 @@ loader.load('res/floor.jpeg', function(texture) {
 	container.appendChild(renderer.domElement);
 
 	scoresDiv = document.createElement("div");
-	scoresDiv.style = "position: fixed; left: 50%; top: 0; transform: translate(-50%, 0); margin-top: 5px; white-space: pre; font-family: monospace;";
+	scoresDiv.style = "position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); white-space: pre; font-family: monospace; color: #FFD700; font-size: 18px; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); pointer-events: none; z-index: 1000;";
 	container.appendChild(scoresDiv);
 
-	// XXX How to get pixel density?
 	ppi = 96 * window.devicePixelRatio;
 
 	window.addEventListener("resize", resizeViewport, false);
@@ -159,10 +202,9 @@ function getLocalPlayer() {
 
 function addVisualLane(slot) {
     var group = new THREE.Group();
-    group.position.x = slot * TRACK_DISTANCE; // same spacing as real lanes
+    group.position.x = slot * TRACK_DISTANCE;
     scene.add(group);
 
-    // Clone the track
     var trackMesh = trackProtoMesh.clone();
     group.add(trackMesh);
 
@@ -197,13 +239,11 @@ function addPlayer(id, local, slot) {
 		pinMeshes[i] = pinMesh;
 	}
 
-
-	// ----- Simple CRT TV placeholder -----
+	// Simple CRT TV
 	var tvWidth  = 2.2;
 	var tvHeight = 1.6;
 	var tvDepth  = 1.5;
 
-	// TV body
 	var tvGeo = new THREE.BoxGeometry(tvWidth, tvHeight, tvDepth);
 	var tvMat = new THREE.MeshStandardMaterial({
 		color: 0x222222,
@@ -212,64 +252,66 @@ function addPlayer(id, local, slot) {
 	});
 	var tvMesh = new THREE.Mesh(tvGeo, tvMat);
 
-	// Position above the lane (adjust if needed)
-	tvMesh.position.set(0, 1.8, -1.2);   // X=center, Y=height, Z=toward player
+	tvMesh.position.set(0, 1.8, -1.2);
 
 	group.add(tvMesh);
 
-	// Grab the video element
 	var video = document.getElementById("tvVideo");
-	video.play(); // start playing
+	video.play();
 
-	// Create a VideoTexture
 	var videoTexture = new THREE.VideoTexture(video);
 	videoTexture.minFilter = THREE.LinearFilter;
 	videoTexture.magFilter = THREE.LinearFilter;
 	videoTexture.format = THREE.RGBFormat;
 
-// Shader material for video + static
-var screenMat = new THREE.ShaderMaterial({
-    uniforms: {
-        videoTexture: { value: videoTexture },
-        time: { value: 0 },
-        staticAmount: { value: 0.05 } // adjust for more/less noise
-    },
-    vertexShader: `
-        varying vec2 vUv;
-        void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-    `,
-    fragmentShader: `
-        uniform sampler2D videoTexture;
-        uniform float time;
-        uniform float staticAmount;
-        varying vec2 vUv;
+	// Shader material for video + static
+	var screenMat = new THREE.ShaderMaterial({
+		uniforms: {
+			videoTexture: { value: videoTexture },
+			time: { value: 0 },
+			staticAmount: { value: 0.05 }
+		},
+		vertexShader: `
+			varying vec2 vUv;
+			void main() {
+				vUv = uv;
+				gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+			}
+		`,
+		fragmentShader: `
+			uniform sampler2D videoTexture;
+			uniform float time;
+			uniform float staticAmount;
+			varying vec2 vUv;
 
-        // Simple pseudo-random function
-        float rand(vec2 co){
-            return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
-        }
+			float rand(vec2 co){
+				return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+			}
 
-        void main() {
-            vec4 videoColor = texture2D(videoTexture, vUv);
-
-            // Add random static
-            float noise = rand(vUv + time);
-            vec3 color = videoColor.rgb + staticAmount * vec3(noise);
-
-            gl_FragColor = vec4(color, 1.0);
-        }
-    `,
-});
+			void main() {
+				vec4 videoColor = texture2D(videoTexture, vUv);
+				float noise = rand(vUv + time);
+				vec3 color = videoColor.rgb + staticAmount * vec3(noise);
+				gl_FragColor = vec4(color, 1.0);
+			}
+		`,
+	});
 
 	var screenGeo = new THREE.PlaneGeometry(1.8, 1.2);
 	var screen = new THREE.Mesh(screenGeo, screenMat);
 	screen.position.set(0, 0, tvDepth * 0.5 + 0.01);
 	tvMesh.add(screen);
 
-	var player = new Player(id, local, physics, scores, ballMesh, pinMeshes);
+	// Setup video ended event listener
+	if (local) {
+		video.addEventListener('ended', function() {
+			// Hide video and zoom back out when video ends
+			screenMat.uniforms.showVideo.value = 0.0;
+			startCameraZoom(cameraDefaultPos, cameraDefaultRot, CAMERA_ZOOM_OUT_DURATION);
+		});
+	}
+
+	var player = new Player(id, local, physics, scores, ballMesh, pinMeshes, tvMesh, screenMat);
 
 	if (!players) {
 		players = new Array();
@@ -358,9 +400,6 @@ function initScene() {
 	addVisualLane(-2);
 	addVisualLane(2);
 
-	// addImitation(-1);
-	// addImitation(1);
-
 	renderer.domElement.addEventListener("mousedown", onDocumentMouseDown, false);
 	renderer.domElement.addEventListener("mousemove", onDocumentMouseMove, false);
 	renderer.domElement.addEventListener("mouseup", onDocumentMouseUp, false);
@@ -374,28 +413,25 @@ function initScene() {
 function detectStandingPins(pinBodies) {
     const standingMask = [];
     
-    const upThreshold = 0.8; // cos(angle) threshold for being upright (1 = perfectly upright)
+    const upThreshold = 0.8;
     
     for (let i = 0; i < pinBodies.length; i++) {
         const pin = pinBodies[i];
         if (!pin) {
-            standingMask.push(false); // no pin
+            standingMask.push(false);
             continue;
         }
         
-        // Get the transform
         const transform = new Ammo.btTransform();
         pin.getMotionState().getWorldTransform(transform);
         const rotation = transform.getRotation();
         
-        // Convert quaternion to up vector
         const up = { 
             x: 2 * (rotation.x() * rotation.z() + rotation.w() * rotation.y()),
             y: 1 - 2 * (rotation.x() * rotation.x() + rotation.z() * rotation.z()),
             z: 2 * (rotation.y() * rotation.z() - rotation.w() * rotation.x())
         };
         
-        // Check if the pin is mostly upright
         if (up.y > upThreshold) {
             standingMask.push(true);
         } else {
@@ -419,7 +455,6 @@ function updateGame(player, dt) {
 
 		const standingMask = detectStandingPins(player.physics.pinBodies);
 
-		// Get the pin numbers (1-based) of standing pins
 		const standingPins = standingMask
 			.map((isStanding, index) => isStanding ? index + 1 : null)
 			.filter(n => n !== null);
@@ -427,20 +462,56 @@ function updateGame(player, dt) {
 		console.log("Standing pins:", standingPins);
 
 		var video = document.getElementById("tvVideo");
+		var shouldZoom = false;
 
-		// Check for strike
+		// Check for strike (all 10 pins knocked down on first ball)
 		if (beatenPinCount === 10) {
 			video.src = "videos/strike/strike-1.mp4";
 			video.play();
+			if (player.screenMaterial) {
+				player.screenMaterial.uniforms.showVideo.value = 1.0;
+			}
+			shouldZoom = true;
 		}
-		// Check for split (only pins 6 and 9 left standing)
-		else if (standingPins.length === 2 && standingPins.includes(7) && standingPins.includes(10)) {
-			video.src = "videos/split/split-1.mp4"; // your split video
+		// Check for gutter ball
+		else if (beatenPinCount === 0) {
+			video.src = "videos/gutter/gutter-1.mp4";
 			video.play();
+			if (player.screenMaterial) {
+				player.screenMaterial.uniforms.showVideo.value = 1.0;
+			}
+			shouldZoom = true;
+		}
+		// Check for spare (all remaining pins knocked down, but not all 10)
+		else if (standingPins.length === 0 && beatenPinCount < 10) {
+			video.src = "videos/spare/spare-1.mp4";
+			video.play();
+			if (player.screenMaterial) {
+				player.screenMaterial.uniforms.showVideo.value = 1.0;
+			}
+			shouldZoom = true;
+		}
+		// Check for split (only pins 7 and 10 left standing)
+		else if (standingPins.length === 2 && standingPins.includes(7) && standingPins.includes(10)) {
+			video.src = "videos/split/split-1.mp4";
+			video.play();
+			if (player.screenMaterial) {
+				player.screenMaterial.uniforms.showVideo.value = 1.0;
+			}
+			shouldZoom = true;
 		}
 		// Regular throw
 		else {
 			video.src = "videos/throw-1.mp4";
+			video.play();
+			if (player.screenMaterial) {
+				player.screenMaterial.uniforms.showVideo.value = 1.0;
+			}
+		}
+
+		// Zoom to TV if special event occurred
+		if (shouldZoom && player.local) {
+			startCameraZoom(cameraZoomPos, cameraZoomRot, CAMERA_ZOOM_DURATION);
 		}
 
 		var prevFrameNumber = player.scores.frameNumber;
@@ -469,6 +540,8 @@ function updateGame(player, dt) {
 }
 
 function updateScene(dt) {
+	updateCameraAnimation(dt);
+	
 	if (imitations) {
 		for (var i = 0; i < imitations.length; i++) {
 			updateImitation(imitations[i], dt);
@@ -539,7 +612,7 @@ function updateTouchRay(clientX, clientY) {
 }
 
 function intersectTouchPlane(ray) {
-	if (Math.abs(ray.direction.y) > 1e-5) { // ray direction must not be parallel to base plane
+	if (Math.abs(ray.direction.y) > 1e-5) {
 		var t = (BASE_HEIGHT - ray.origin.y) / ray.direction.y;
 		if (t >= 0.0) {
 			dragPoint.copy(ray.direction).multiplyScalar(t).add(ray.origin);

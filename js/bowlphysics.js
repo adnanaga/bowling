@@ -3,8 +3,8 @@ const MAX_SUB_STEPS = 10;
 const FIXED_TIME_STEP = 0.01;
 const TIME_STEP_MAX = MAX_SUB_STEPS * FIXED_TIME_STEP;
 
-// const GRAVITY = 9.81;
-const GRAVITY = 12;
+const GRAVITY = 9.81;
+// const GRAVITY = 12;
 
 const BOTTOM_HEIGHT = 0.05;
 const BASE_HEIGHT = 0.15;
